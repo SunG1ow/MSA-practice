@@ -55,4 +55,4 @@ DTO의 final은 유지하고 아래처럼 해결했다.
 - 7장: RestTemplate 제거, WebClient로 전환. restTemplate() 코드도 함께 삭제
 - final 관련 yml 설정은 유지: HttpErrorInfo가 23장까지 final
 - 7장 Event도 final이고 fasterxml import 사용. 메시지 수신 서비스에서 확인 필요
-- 교재 yml을 통째로 덮어쓸 때 위 설정이 사라지지 않게 주의
+- 교재 yml을 통째로 덮어쓸 때 위 설정이 사라지지 않게 주의 
