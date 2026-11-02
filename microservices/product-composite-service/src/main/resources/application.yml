@@ -1,5 +1,5 @@
 server.port: 7001
-server.error.include-message: always
+spring.web.error.include-message: always
 spring.jackson.mapper.allow-final-fields-as-mutators: true
 
 app:
