@@ -22,7 +22,7 @@ import se.magnus.api.exceptions.InvalidInputException;
 import se.magnus.microservices.core.recommendation.persistence.RecommendationRepository;
 
 @AutoConfigureWebTestClient 
-@SpringBootTest(webEnvironment = RANDOM_PORT)
+@SpringBootTest(webEnvironment = RANDOM_PORT, properties = {"eureka.client.enabled=false"})
 class RecommendationServiceApplicationTests extends MongoDbTestBase {
 
   @Autowired
