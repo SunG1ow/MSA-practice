@@ -18,7 +18,7 @@
 - 교수님 진도에 맞춰 Boot 4.0.9 / Java 21 / Gradle 9.8.2 / Spring Cloud 2025.1.4 유지
   (저자 코드는 Boot 3.5.x / Java 24 / Gradle 8.14 / Spring Cloud 2025.0.0)
 
-## 현재 상태 (2026-11-13, 7장 완료)
+## 현재 상태 (2026-11-17, 10장 완료)
 - 3장: api, util, product, recommendation, review, product-composite 서비스 구현
 - 4장: Dockerfile 4개, docker-compose.yml, docker 프로파일, test-em-all.bash(start/stop)
 - 5장: springdoc-openapi 적용, Swagger UI 및 OpenAPI 문서 테스트
@@ -27,10 +27,21 @@
   - 조회(GET): 논블로킹 동기 (WebClient + Mono.zip, 리액티브 Mongo, review는 JPA + jdbcScheduler)
   - 생성/삭제: composite가 StreamBridge로 이벤트 발행 → core 서비스의 MessageProcessorConfig가 소비 (202 Accepted)
   - ./gradlew build 통과, test-em-all 통과: 기본(RabbitMQ), partitions, kafka 3가지 모두
+- 8장: 개념만 (저자 저장소에 Chapter08 없음)
+- 9장: 서비스 디스커버리 (spring-cloud/eureka-server 추가)
+  - 서비스 4개에 eureka-client, yml에 spring.application.name과 eureka 구역, 테스트는 `eureka.client.enabled=false`
+  - composite: `@LoadBalanced WebClient.Builder` 빈, 호출 주소는 `http://product` 같은 서비스 이름
+- 10장: 엣지 서버 (spring-cloud/gateway 추가)
+  - 외부 공개는 gateway 하나뿐. composite와 eureka는 ports 삭제
+  - 헬스 체크는 composite에서 gateway로 옮김 (composite의 HealthCheckConfiguration 삭제, Integration의 getXxxHealth 삭제)
+  - composite yml: `springdoc.cache.disabled: true`, `server.forward-headers-strategy: framework`
+  - 헤더 라우팅 대상: httpstat.us 대신 httpbin 컨테이너 (아래 표 참고)
 - 포트
-  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004
-  - docker 프로파일: 모든 서비스 8080, 외부 공개는 composite 8080:8080
+  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8080
+  - docker 프로파일: 모든 서비스 8080, 외부 공개는 gateway 8080:8080 하나
+  - Gateway 경유 주소: `/product-composite/**`, `/openapi/swagger-ui.html`, `/eureka/web`(대시보드), `/eureka/api/apps`
   - DB/브로커: mongodb 27017, mysql 3306, rabbitmq 5672(관리 화면 15672, guest/guest), kafka 9092, zookeeper 2181
+
 
 ## 저자 코드와 다르게 한 부분
 교재 코드를 옮길 때 아래 내용을 함께 바꾼다.
@@ -58,6 +69,12 @@
 | `org.springframework.boot.actuate.health.*` | `org.springframework.boot.health.contributor.*` (Health, ReactiveHealthIndicator 등) |
 | (없음) | composite: `spring-boot-starter-webclient` 추가 (WebClient.Builder 빈) |
 | (없음) | 서비스 4개 모두 yml에 `spring.jackson.mapper.allow-final-fields-as-mutators: true` |
+| `org.springframework.boot.test.web.client.TestRestTemplate` | `org.springframework.boot.resttestclient.TestRestTemplate` + 클래스에 `@AutoConfigureTestRestTemplate` |
+| (없음) | eureka-server 테스트 의존성: `spring-boot-resttestclient`, `spring-boot-restclient` (RestTemplateBuilder) |
+| health 기대값 `{"status":"UP"}` | `{"groups":["liveness","readiness"],"status":"UP"}` (eureka-server 테스트) |
+| gateway 라우트 `uri: http://httpstat.us`, `SetPath=/200` | `uri: http://httpbin:8080`, `SetPath=/status/200` (418, 501도 같은 방식) |
+| (없음) | compose 3개 끝에 `httpbin` 서비스 (`image: mccutchen/go-httpbin`, `mem_limit: 64m`, ports 없음) |
+
 
 - `AutoConfigureWebTestClient` import 경로:
   `org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient`
@@ -77,6 +94,11 @@
 - yml의 Swagger 설명 문구 "Unprocessable Entity"는 문서용 텍스트라 교재대로 둔다.
 - `Event`의 `@JsonSerialize`(fasterxml)는 교재대로 둔다. Spring Cloud Stream이 Jackson 2를 함께 가져와서
   컴파일은 되고, Jackson 3는 이 어노테이션을 무시한다. eventCreatedAt은 ISO 문자열(UTC, `Z`)로 나온다.
+- `@AutoConfigureTestRestTemplate` import: `org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate`
+- gateway의 HealthCheckConfiguration도 `org.springframework.boot.health.contributor.*` import로 바꾼다.
+- `spring.cloud.gateway.server.webflux.*` 속성 이름은 2025.1.4에서 그대로 동작한다.
+- httpstat.us는 응답하지 않아서 교수님 안내대로 httpbin으로 바꿨다. go-httpbin은 8080 포트를 쓴다(kennethreitz/httpbin은 80).
+  compose 내부 이름으로 접근하므로 헤더 라우팅은 Docker 실행에서만 동작한다.
 
 ## Jackson 3의 final 필드 대응 (적용 완료)
 증상: final 필드 객체를 JSON에서 읽을 때 값이 비어 있음 (productId 0, name null)
@@ -87,7 +109,7 @@
     이 문제를 잡지 못하고 Docker 실행 때만 드러난다. (DLQ 토픽 error.* 이 비어 있으면 정상)
 - 6장의 RestTemplate(JsonMapper) 빈은 7장에서 RestTemplate과 함께 삭제했다.
 
-## 저자 파일을 통째로 복사할 때 다시 확인할 것 (6·7장에서 실제로 덮어써짐)
+## 저자 파일을 통째로 복사할 때 다시 확인할 것 (6·7·9·10장에서 실제로 덮어써짐)
 - build.gradle: springCloudVersion, test starter 이름, Testcontainers 모듈명, mongodb-reactive(-test),
   composite의 starter-webclient와 stream-test-binder
 - *ApplicationTests, MessagingTests: `@AutoConfigureWebTestClient`, `UNPROCESSABLE_CONTENT`
@@ -101,6 +123,11 @@
 - core 서비스 yml: `spring.mongodb` (기본 + docker 구역), `allow-final-fields-as-mutators`
 - api: VS Code 자동 import가 `io.swagger.v3.oas.annotations.parameters.RequestBody`를 넣으면 Spring의
   `@RequestBody`가 무시되어 빈 객체가 들어온다(key 0). Spring 것은 `org.springframework.web.bind.annotation.*`
+- spring-cloud/eureka-server, gateway: 폴더째 복사하면 `settings.gradle`이 다시 들어오므로 삭제.
+  build.gradle(4.0.9/21/2025.1.4, 테스트 의존성), Dockerfile(temurin 21), 루트 settings.gradle의 include
+- gateway yml: host_route_* 3개의 uri와 SetPath (httpbin)
+- docker-compose 3개: 저자 파일로 받으면 맨 끝 `httpbin` 서비스가 빠진다. 다시 추가할 것
+- test-em-all.bash: 저자 파일로 받으면 우리만의 수정이 없는지 diff로 확인
 - 확인 방법: 저자 ChapterXX와 diff, 서비스별 `./gradlew :microservices:xxx-service:build`, 전체 `./gradlew build`,
   `./test-em-all.bash start stop`
 
@@ -117,6 +144,19 @@
   확인: `docker image ls | grep msa`의 생성 시간과 build/libs의 jar 시간 비교
 - 7장 test-em-all: `/actuator/health`로 시작 대기, POST/DELETE는 202 기대, `waitForMessageProcessing`이 재시도.
   "Test FAILED ... WILL ABORT" 다음에 retry #1이 이어지면 최종 일관성 때문의 정상 재시도다.
+- 9·10장 test-em-all: Eureka 확인은 Gateway 경유 `$HOST:$PORT/eureka/api/apps`, 등록 수 5
+  (gateway, product-composite, product, recommendation, review). `/actuator/health`는 이제 Gateway의 health이며,
+  4개 서비스가 Eureka에 등록되고 응답해야 UP이 되므로 시작 대기가 길어질 수 있다.
+- Gateway 관찰 명령 (`./test-em-all.bash start`로 띄운 상태에서)
+  ```bash
+  curl localhost:8080/actuator/gateway/routes -s | jq '.[] | {"\(.route_id)": "\(.uri)"}' | grep -v '{\|}'
+  docker compose logs -f --tail=0 gateway            # 다른 터미널에서 curl localhost:8080/product-composite/1
+  curl -H "accept:application/json" localhost:8080/eureka/api/apps -s | jq -r '.applications.application[].instance[].instanceId'
+  curl localhost:8080/headerrouting -H "Host: i.feel.lucky:8080" -i   # 200 (im.a.teapot → 418, Host 없음 → 501)
+  ```
+  - 교재의 `curl http://httpstat.us/200 -i`는 `curl https://httpbin.org/status/200 -i`로 대신한다.
+  - hosts 실습은 WSL의 /etc/hosts를 고친다: `sudo bash -c "echo '127.0.0.1 i.feel.lucky im.a.teapot' >> /etc/hosts"`,
+    끝나면 `sudo sed -i '/i.feel.lucky im.a.teapot/d' /etc/hosts` (WSL 재시작 시에도 다시 생성됨)
 - 파티션/Kafka 실행 (같은 터미널에서)
   ```bash
   export COMPOSE_FILE=docker-compose-partitions.yml   # 또는 docker-compose-kafka.yml
