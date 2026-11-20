@@ -18,7 +18,7 @@
 - 교수님 진도에 맞춰 Boot 4.0.9 / Java 21 / Gradle 9.8.2 / Spring Cloud 2025.1.4 유지
   (저자 코드는 Boot 3.5.x / Java 24 / Gradle 8.14 / Spring Cloud 2025.0.0)
 
-## 현재 상태 (2026-11-17, 10장 완료)
+## 현재 상태 (2026-11-20, 11장 완료)
 - 3장: api, util, product, recommendation, review, product-composite 서비스 구현
 - 4장: Dockerfile 4개, docker-compose.yml, docker 프로파일, test-em-all.bash(start/stop)
 - 5장: springdoc-openapi 적용, Swagger UI 및 OpenAPI 문서 테스트
@@ -36,10 +36,18 @@
   - 헬스 체크는 composite에서 gateway로 옮김 (composite의 HealthCheckConfiguration 삭제, Integration의 getXxxHealth 삭제)
   - composite yml: `springdoc.cache.disabled: true`, `server.forward-headers-strategy: framework`
   - 헤더 라우팅 대상: httpstat.us 대신 httpbin 컨테이너 (아래 표 참고)
+- 11장: API 보안 (spring-cloud/authorization-server 추가, Spring Authorization Server)
+  - Gateway HTTPS 8443 (자체 서명 keystore/edge.p12, 비밀번호 password), 토큰 유효 검사(401)
+  - composite: scope 검사(GET은 product:read, POST/DELETE는 product:write, 없으면 403), Swagger OAuth(PKCE)
+  - Eureka HTTP Basic 보호 (u/p)
+  - 클라이언트 writer/secret-writer(read+write), reader/secret-reader(read), 사용자 u/p, 토큰 1시간, issuer http://auth-server:9999
+  - test-em-all 통과 (기본 RabbitMQ 구성), 교재 OAuth 실습(client_credentials, 인가 코드+PKCE, Swagger) 완료
+  - Auth0(외부 OIDC) 실습은 선택이라 진행하지 않음. 하게 되면 audience 파라미터, issuer-uri 끝 `/`,
+    env.bash(이메일, 비밀번호, secret) 커밋 금지 주의
 - 포트
-  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8080
-  - docker 프로파일: 모든 서비스 8080, 외부 공개는 gateway 8080:8080 하나
-  - Gateway 경유 주소: `/product-composite/**`, `/openapi/swagger-ui.html`, `/eureka/web`(대시보드), `/eureka/api/apps`
+  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8443(https), auth-server 9999
+  - docker 프로파일: 모든 서비스 8080(auth-server 9999), 외부 공개는 gateway 8443:8443 하나
+  - Gateway 경유 주소(https, -k): `/product-composite/**`(토큰 필요), `/openapi/swagger-ui.html`, `/eureka/web`·`/eureka/api/apps`(u/p), `/oauth2/**`·`/login`(auth-server)
   - DB/브로커: mongodb 27017, mysql 3306, rabbitmq 5672(관리 화면 15672, guest/guest), kafka 9092, zookeeper 2181
 
 
@@ -74,7 +82,13 @@
 | health 기대값 `{"status":"UP"}` | `{"groups":["liveness","readiness"],"status":"UP"}` (eureka-server 테스트) |
 | gateway 라우트 `uri: http://httpstat.us`, `SetPath=/200` | `uri: http://httpbin:8080`, `SetPath=/status/200` (418, 501도 같은 방식) |
 | (없음) | compose 3개 끝에 `httpbin` 서비스 (`image: mccutchen/go-httpbin`, `mem_limit: 64m`, ports 없음) |
-
+| `spring-boot-starter-oauth2-authorization-server` | `spring-boot-starter-security-oauth2-authorization-server` (옛 이름 deprecated) |
+| `starter-security` + `spring-security-oauth2-resource-server` + `spring-security-oauth2-jose` | `spring-boot-starter-security-oauth2-resource-server` 1줄 (gateway, composite) |
+| auth-server `testImplementation 'spring-boot-starter-test'` | `spring-boot-starter-webmvc-test` + `junit-platform-launcher` |
+| `org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc` | `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc` |
+| `org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.*` / `...configuration.*` | `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.*` / `org.springframework.security.config.annotation.web.configuration.*` |
+| (없음) | composite yml `springdoc.swagger-ui.oauth.usePkceWithAuthorizationCodeGrant: true` (PKCE) |
+| (없음) | authorization-server build.gradle에 `jar { enabled = false }` (없으면 Dockerfile ADD 실패) |
 
 - `AutoConfigureWebTestClient` import 경로:
   `org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient`
@@ -99,6 +113,19 @@
 - `spring.cloud.gateway.server.webflux.*` 속성 이름은 2025.1.4에서 그대로 동작한다.
 - httpstat.us는 응답하지 않아서 교수님 안내대로 httpbin으로 바꿨다. go-httpbin은 8080 포트를 쓴다(kennethreitz/httpbin은 80).
   compose 내부 이름으로 접근하므로 헤더 라우팅은 Docker 실행에서만 동작한다.
+- Spring Authorization Server는 Spring Security 7에 합쳐졌다. 설정 클래스 위치:
+  `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`,
+  `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
+  (`...oauth2.server.authorization.client.*`, `settings.*`, `authentication.*` 등 나머지 import는 그대로)
+- Boot 4 인가 서버는 Authorization Code 흐름에 PKCE를 기본으로 요구한다(Boot 3은 요구하지 않음).
+  없으면 `invalid_request ... code_challenge`. Swagger UI는 composite yml
+  `springdoc.swagger-ui.oauth.usePkceWithAuthorizationCodeGrant: true`로 해결.
+  교재의 브라우저+curl 실습은 code_challenge / code_verifier를 직접 붙인다(아래 Docker 실습 메모).
+- auth-server는 서블릿(Spring MVC) 앱이라 테스트가 MockMvc다. gateway·composite는 WebFlux.
+- composite 테스트는 `classes = {TestSecurityConfig.class}`, `issuer-uri=`(빈 값), `allow-bean-definition-overriding=true`로
+  보안을 끄고 비즈니스 로직만 검증한다. 보안 동작(401/403)은 test-em-all이 Docker에서 검증한다.
+- Eureka 보호(u/p, HTTP Basic): eureka-server의 SecurityConfig, 등록하는 모든 서비스의 defaultZone에 `u:p@`,
+  eureka-server 테스트는 `testRestTemplate.withBasicAuth(username, password)`
 
 ## Jackson 3의 final 필드 대응 (적용 완료)
 증상: final 필드 객체를 JSON에서 읽을 때 값이 비어 있음 (productId 0, name null)
@@ -128,6 +155,12 @@
 - gateway yml: host_route_* 3개의 uri와 SetPath (httpbin)
 - docker-compose 3개: 저자 파일로 받으면 맨 끝 `httpbin` 서비스가 빠진다. 다시 추가할 것
 - test-em-all.bash: 저자 파일로 받으면 우리만의 수정이 없는지 diff로 확인
+- 11장 authorization-server: build.gradle 전체(위 표), Dockerfile temurin 21, settings.gradle 삭제,
+  AuthorizationServerConfig import 2줄, 테스트의 AutoConfigureMockMvc import
+- 11장 gateway·composite yml: 저자 파일로 덮으면 httpbin 라우트, `allow-final-fields-as-mutators`, `include-message`,
+  `usePkceWithAuthorizationCodeGrant`가 빠진다. build.gradle은 resource-server 스타터 1줄로 대체한 것을 확인
+- 11장 compose 3개: 저자 11장 파일로 받고 httpbin을 다시 붙였다 (저자 파일은 끝에 줄바꿈이 없음)
+- 11장 test-em-all.bash: 저자 11장 파일을 그대로 사용 (우리만의 수정 없음)
 - 확인 방법: 저자 ChapterXX와 diff, 서비스별 `./gradlew :microservices:xxx-service:build`, 전체 `./gradlew build`,
   `./test-em-all.bash start stop`
 
@@ -147,16 +180,40 @@
 - 9·10장 test-em-all: Eureka 확인은 Gateway 경유 `$HOST:$PORT/eureka/api/apps`, 등록 수 5
   (gateway, product-composite, product, recommendation, review). `/actuator/health`는 이제 Gateway의 health이며,
   4개 서비스가 Eureka에 등록되고 응답해야 UP이 되므로 시작 대기가 길어질 수 있다.
-- Gateway 관찰 명령 (`./test-em-all.bash start`로 띄운 상태에서)
+- Gateway 관찰 명령 (`./test-em-all.bash start`로 띄운 상태에서, 11장부터 https/8443과 `-k`)
   ```bash
-  curl localhost:8080/actuator/gateway/routes -s | jq '.[] | {"\(.route_id)": "\(.uri)"}' | grep -v '{\|}'
-  docker compose logs -f --tail=0 gateway            # 다른 터미널에서 curl localhost:8080/product-composite/1
-  curl -H "accept:application/json" localhost:8080/eureka/api/apps -s | jq -r '.applications.application[].instance[].instanceId'
-  curl localhost:8080/headerrouting -H "Host: i.feel.lucky:8080" -i   # 200 (im.a.teapot → 418, Host 없음 → 501)
+  curl -k https://localhost:8443/actuator/gateway/routes -s | jq '.[] | {"\(.route_id)": "\(.uri)"}' | grep -v '{\|}'
+  docker compose logs -f --tail=0 gateway
+  curl -H "accept:application/json" -k https://u:p@localhost:8443/eureka/api/apps -s | jq -r '.applications.application[].instance[].instanceId'
+  curl -k https://localhost:8443/headerrouting -H "Host: i.feel.lucky:8080" -i   # 200 (im.a.teapot → 418, Host 없음 → 501)
   ```
   - 교재의 `curl http://httpstat.us/200 -i`는 `curl https://httpbin.org/status/200 -i`로 대신한다.
   - hosts 실습은 WSL의 /etc/hosts를 고친다: `sudo bash -c "echo '127.0.0.1 i.feel.lucky im.a.teapot' >> /etc/hosts"`,
     끝나면 `sudo sed -i '/i.feel.lucky im.a.teapot/d' /etc/hosts` (WSL 재시작 시에도 다시 생성됨)
+- 11장 test-em-all: PORT 8443, https + `-k`, writer 토큰(client_credentials)으로 호출, Eureka 등록 수 6(auth-server 추가),
+  토큰 없음 401, reader 토큰으로 DELETE 403. 시작 순서가 auth-server(healthy) → composite·gateway라 대기가 길다(retry 10회 정도).
+- OAuth 실습 명령 (11장)
+  ```bash
+  TOKEN=$(curl -sk https://writer:secret-writer@localhost:8443/oauth2/token -d grant_type=client_credentials -d scope="product:read product:write" | jq -r .access_token)
+  READER_TOKEN=$(curl -sk https://reader:secret-reader@localhost:8443/oauth2/token -d grant_type=client_credentials -d scope="product:read" | jq -r .access_token)
+  curl -k https://localhost:8443/product-composite/1 -H "Authorization: Bearer $READER_TOKEN" -i                # 200
+  curl -k https://localhost:8443/product-composite/999 -H "Authorization: Bearer $READER_TOKEN" -X DELETE -i    # 403
+  docker compose logs -f product-composite | grep "Authorization info"
+  ```
+  - 인가 코드 실습은 PKCE가 필수다. 같은 터미널에서 VERIFIER/CHALLENGE를 만들고, authorize 주소에
+    `&code_challenge=$CHALLENGE&code_challenge_method=S256`, 토큰 교환 curl에 `-d code_verifier=$VERIFIER`를 붙인다.
+    ```bash
+    VERIFIER=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
+    CHALLENGE=$(printf %s "$VERIFIER" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=')
+    ```
+  - `invalid_grant`: VERIFIER가 그 시도의 짝이 아님(다른 터미널, ① 재실행), code 만료(약 5분), code 재사용. ①부터 다시.
+  - redirect 후 "사이트에 연결할 수 없음"은 정상. 주소창의 `code=` 뒤부터 `&state` 앞까지 복사.
+  - 교재 오타: 주소의 `https:/localhost`, curl의 `my.redirect.url`(→ `.uri`), "read 스코프만 가진 토큰"은 reader/product:read
+  - Swagger UI: 새 시크릿 창에서 Authorize → select all → u/p → 동의 → Close. 인증서 경고는 "고급 → 계속"
+- 로컬(java -jar)로 gateway·composite를 띄우면 토큰 검증이 실패한다. auth-server가 issuer를 `http://auth-server:9999`로
+  고정해서, localhost로 접속한 쪽과 issuer가 다르기 때문이다(`did not match`). 토큰 관련 확인은 Docker에서 한다.
+- auth-server는 시작할 때마다 서명 키를 새로 만든다. auth-server만 재시작하면 이전 토큰은 모두 401이 된다.
+
 - 파티션/Kafka 실행 (같은 터미널에서)
   ```bash
   export COMPOSE_FILE=docker-compose-partitions.yml   # 또는 docker-compose-kafka.yml
