@@ -18,7 +18,7 @@
 - 교수님 진도에 맞춰 Boot 4.0.9 / Java 21 / Gradle 9.8.2 / Spring Cloud 2025.1.4 유지
   (저자 코드는 Boot 3.5.x / Java 24 / Gradle 8.14 / Spring Cloud 2025.0.0)
 
-## 현재 상태 (2026-11-20, 11장 완료)
+## 현재 상태 (2026-11-23, 12장 완료)
 - 3장: api, util, product, recommendation, review, product-composite 서비스 구현
 - 4장: Dockerfile 4개, docker-compose.yml, docker 프로파일, test-em-all.bash(start/stop)
 - 5장: springdoc-openapi 적용, Swagger UI 및 OpenAPI 문서 테스트
@@ -44,9 +44,18 @@
   - test-em-all 통과 (기본 RabbitMQ 구성), 교재 OAuth 실습(client_credentials, 인가 코드+PKCE, Swagger) 완료
   - Auth0(외부 OIDC) 실습은 선택이라 진행하지 않음. 하게 되면 audience 파라미터, issuer-uri 끝 `/`,
     env.bash(이메일, 비밀번호, secret) 커밋 금지 주의
+- 12장: 중앙 집중식 구성 (spring-cloud/config-server 추가, Spring Cloud Config)
+  - config-server: 8888, `native` 프로파일, 저장소는 루트 `config-repo/` (로컬 `file:${PWD}/config-repo`, docker는 볼륨 `/config-repo`)
+  - 서비스 7개 모두 `src/main/resources/application.yml` 삭제 → `bootstrap.yml`(이름, config uri, failFast, retry)만 남김.
+    설정 내용은 `config-repo/application.yml`(공통) + `config-repo/{앱이름}.yml`(서비스별)
+  - 앱 이름: product, recommendation, review, product-composite, gateway, eureka-server, auth-server(폴더명과 다름)
+  - 구성 서버 보호 HTTP Basic dev-usr/dev-pwd, 암호화 키 my-very-secure-encrypt-key (루트 `.env`, compose가 자동으로 읽음)
+  - config-repo의 비밀번호는 `{cipher}` 암호문. 구성 서버가 복호화해서 평문으로 내려준다
+  - Gateway `/config/**` → config-server (RewritePath), SecurityConfig에서 permitAll (인증은 구성 서버의 Basic)
+  - test-em-all 통과 (기본 RabbitMQ 구성), 교재 실습(설정 조회, encrypt/decrypt, `{cipher}` 복호화 확인) 완료
 - 포트
-  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8443(https), auth-server 9999
-  - docker 프로파일: 모든 서비스 8080(auth-server 9999), 외부 공개는 gateway 8443:8443 하나
+  - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8443(https), auth-server 9999, config-server 8888
+  - docker 프로파일: 모든 서비스 8080(auth-server 9999, config-server 8888), 외부 공개는 gateway 8443:8443 하나
   - Gateway 경유 주소(https, -k): `/product-composite/**`(토큰 필요), `/openapi/swagger-ui.html`, `/eureka/web`·`/eureka/api/apps`(u/p), `/oauth2/**`·`/login`(auth-server)
   - DB/브로커: mongodb 27017, mysql 3306, rabbitmq 5672(관리 화면 15672, guest/guest), kafka 9092, zookeeper 2181
 
@@ -89,6 +98,12 @@
 | `org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.*` / `...configuration.*` | `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.*` / `org.springframework.security.config.annotation.web.configuration.*` |
 | (없음) | composite yml `springdoc.swagger-ui.oauth.usePkceWithAuthorizationCodeGrant: true` (PKCE) |
 | (없음) | authorization-server build.gradle에 `jar { enabled = false }` (없으면 Dockerfile ADD 실패) |
+| `spring-boot-starter-aop` | `spring-boot-starter-aspectj` (Boot 4 이름 변경) |
+| `spring-cloud-config-client` + `starter-config` | `starter-config` 하나 (client 포함) |
+| 테스트 yml `server.error.include-message` | `spring.web.error.include-message` (저자 12장 테스트 yml에도 옛 이름) |
+| (없음) | composite 테스트 yml 1행 `spring.jackson.mapper.allow-final-fields-as-mutators: true` |
+| (없음) | review 테스트 2개에 `spring.jpa.hibernate.ddl-auto=update` |
+| auth-server 테스트 yml (저자 12장) | 만들지 않음 (`ml.` 로 시작하는 잘못된 줄이 섞여 있음, 없어도 통과) |
 
 - `AutoConfigureWebTestClient` import 경로:
   `org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient`
@@ -126,6 +141,20 @@
   보안을 끄고 비즈니스 로직만 검증한다. 보안 동작(401/403)은 test-em-all이 Docker에서 검증한다.
 - Eureka 보호(u/p, HTTP Basic): eureka-server의 SecurityConfig, 등록하는 모든 서비스의 defaultZone에 `u:p@`,
   eureka-server 테스트는 `testRestTemplate.withBasicAuth(username, password)`
+- 12장 서비스별 의존성 4줄 (eureka-client 아래, eureka-server는 `dependencies {` 바로 아래):
+  `spring-cloud-starter-config`, `spring-cloud-starter-bootstrap`, `spring-boot-starter-aspectj`, `spring-retry`.
+  aspectj나 retry가 빠지면 retry 설정이 무시되어 구성 서버가 늦게 뜰 때 바로 실패한다.
+- 12장 테스트는 구성 서버 없이 돌린다: 모든 테스트 어노테이션에 `spring.cloud.config.enabled=false`
+  (`@DataMongoTest(properties = ...)`, `@DataJpaTest(properties = ...)` 포함).
+  main의 application.yml이 없어졌으므로 테스트에 필요한 값은 `src/test/resources/application.yml`에 둔다.
+  - product·recommendation: `spring.web.error.include-message`, `spring.cloud.stream.defaultBinder: rabbit`
+  - review: 위 + logging. 테이블 생성은 테스트 어노테이션의 `ddl-auto=update` (MySQL 컨테이너의 기본값은 none)
+  - composite: allow-final + 빈 `api.common.*` + stream bindings(`products-out-0.destination` 등)
+  - gateway: `spring.security.oauth2.resourceserver.jwt.jwk-set-uri: .` (JwtDecoder 빈만 생기게 하는 가짜 값)
+  - eureka-server: `app.eureka-username: u`, `app.eureka-password: p` (테스트의 `@Value`)
+- `include-message`가 빠지면 `getProductInvalidParameterString`만 실패한다(`No value at JSON path "$.message"`).
+  타입 불일치는 Spring 기본 에러 처리라 이 설정이 필요하고, 음수 검사는 우리 핸들러가 message를 직접 넣어서 통과한다.
+- gateway의 `keystore/edge.p12`는 src/main/resources에 남긴다. 구성 서버는 경로(`classpath:keystore/edge.p12`)만 내려준다.
 
 ## Jackson 3의 final 필드 대응 (적용 완료)
 증상: final 필드 객체를 JSON에서 읽을 때 값이 비어 있음 (productId 0, name null)
@@ -161,12 +190,23 @@
   `usePkceWithAuthorizationCodeGrant`가 빠진다. build.gradle은 resource-server 스타터 1줄로 대체한 것을 확인
 - 11장 compose 3개: 저자 11장 파일로 받고 httpbin을 다시 붙였다 (저자 파일은 끝에 줄바꿈이 없음)
 - 11장 test-em-all.bash: 저자 11장 파일을 그대로 사용 (우리만의 수정 없음)
+- 12장 config-server: build.gradle(4.0.9/21/2025.1.4, `jar enabled=false`, junit-platform-launcher), Dockerfile temurin 21,
+  모듈 안 settings.gradle 삭제 (include는 루트 settings.gradle에 `include ':spring-cloud:config-server'`)
+- 12장 config-repo: 저자 파일 8개를 받은 뒤 우리 설정을 다시 넣었다. `application.yml`에 allow-final,
+  product·recommendation·review·product-composite.yml에 `spring.web.error.include-message`,
+  product·recommendation.yml에 `spring.mongodb`(기본 + docker 구역), gateway.yml에 httpbin 3개 라우트,
+  product-composite.yml에 `usePkceWithAuthorizationCodeGrant`
+  (allow-final은 application.yml에만 있으면 되지만 8개 모두에 넣어 둔 상태. 동작에는 문제없음)
+- 12장 compose 3개: 저자 12장 파일로 받고 httpbin을 다시 붙였다. test-em-all.bash는 저자 12장 그대로
+- 13장 이후 설정 변경은 서비스 yml이 아니라 `config-repo/`에서 한다. 저자 ChapterXX의 config-repo와 diff할 것
 - 확인 방법: 저자 ChapterXX와 diff, 서비스별 `./gradlew :microservices:xxx-service:build`, 전체 `./gradlew build`,
   `./test-em-all.bash start stop`
 
 ## Docker 실습 메모
-- 각 서비스 yml 끝에 docker 프로파일 구역이 있어야 한다. 없으면 컨테이너 안에서 7002 등으로 떠서
+- 각 서비스 설정(12장부터 `config-repo/{앱이름}.yml`) 끝에 docker 프로파일 구역이 있어야 한다. 없으면 컨테이너 안에서 7002 등으로 떠서
   `curl: (56) Recv failure: Connection reset by peer`가 난다.
+- 12장부터 config-repo만 바꿨다면 이미지 재빌드는 필요 없다(볼륨으로 연결). 해당 서비스만 다시 시작한다: `docker compose restart product`.
+  Java 코드, bootstrap.yml, build.gradle을 바꿨다면 아래처럼 jar와 이미지를 다시 빌드한다.
 - 코드나 yml을 바꾸면 jar와 이미지를 모두 다시 빌드해야 반영된다.
   ```bash
   ./gradlew build
@@ -213,6 +253,18 @@
 - 로컬(java -jar)로 gateway·composite를 띄우면 토큰 검증이 실패한다. auth-server가 issuer를 `http://auth-server:9999`로
   고정해서, localhost로 접속한 쪽과 issuer가 다르기 때문이다(`did not match`). 토큰 관련 확인은 Docker에서 한다.
 - auth-server는 시작할 때마다 서명 키를 새로 만든다. auth-server만 재시작하면 이전 토큰은 모두 401이 된다.
+- 12장 test-em-all: 11장 내용 + Gateway 경유 `/config/product/docker` 200, encrypt/decrypt `hello-world` 비교.
+  Eureka 등록 수는 6 그대로 (config-server는 Eureka에 등록하지 않음).
+  시작 직후 `Could not locate PropertySource ... retrying`은 구성 서버를 기다리는 정상 재시도다.
+- 구성 서버 실습 명령 (12장, 반드시 `~/msa`에서 실행. 다른 곳이면 `.env`를 못 읽어 `variable is not set` 경고)
+  ```bash
+  curl -k https://dev-usr:dev-pwd@localhost:8443/config/product/docker -s | jq -r '.propertySources[].name'   # 위가 우선
+  curl -k https://dev-usr:dev-pwd@localhost:8443/config/product-docker.yml -s                                 # 합쳐진 최종 설정
+  ENC=$(curl -k https://dev-usr:dev-pwd@localhost:8443/config/encrypt --data-urlencode "hello world" -s)
+  curl -k https://dev-usr:dev-pwd@localhost:8443/config/decrypt -d $ENC -s ; echo
+  curl -k https://dev-usr:dev-pwd@localhost:8443/config/review/docker -s | jq '.propertySources[].source | with_entries(select(.key | test("password")))'
+  curl -k https://localhost:8443/config/product/docker -i -s | head -1                                        # 401
+
 
 - 파티션/Kafka 실행 (같은 터미널에서)
   ```bash

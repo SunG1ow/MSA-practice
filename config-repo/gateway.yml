@@ -1,6 +1,6 @@
-server.port: 8443
+spring.jackson.mapper.allow-final-fields-as-mutators: true
 
-spring.application.name: gateway
+server.port: 8443
 
 # During development, allow forwarding the X-Forwarded-* and Forwarded headers from any proxies.
 # When usd in QA and production, this should be set to a specific IP address or CIDR range, e.g. 10\.0\.0\..* (Java Regular Expression).
@@ -13,25 +13,9 @@ spring.ssl.bundle.jks.gateway:
   keystore:
     type: PKCS12
     location: classpath:keystore/edge.p12
-    password: password
+    password: '{cipher}d59274473b196cebe288f849c442eba34aa497d14a13e10a23f824489e1c23ec'
 
 server.ssl.bundle: gateway
-
-app:
-  eureka-username: u
-  eureka-password: p
-  eureka-server: localhost
-  auth-server: localhost
-
-eureka:
-  client:
-    serviceUrl:
-      defaultZone: "http://${app.eureka-username}:${app.eureka-password}@${app.eureka-server}:8761/eureka/"
-    initialInstanceInfoReplicationIntervalSeconds: 5
-    registryFetchIntervalSeconds: 5
-  instance:
-    leaseRenewalIntervalInSeconds: 5
-    leaseExpirationDurationInSeconds: 5
 
 spring.cloud.gateway.server.webflux.routes:
 
@@ -79,6 +63,13 @@ spring.cloud.gateway.server.webflux.routes:
   predicates:
   - Path=/eureka/**
 
+- id: config-server
+  uri: ${spring.cloud.config.uri}
+  predicates:
+  - Path=/config/**
+  filters:
+  - RewritePath=/config/(?<segment>.*), /$\{segment}
+
 - id: host_route_200
   uri: http://httpbin:8080
   predicates:
@@ -105,18 +96,11 @@ spring.cloud.gateway.server.webflux.routes:
 spring.security.oauth2.resourceserver.jwt.issuer-uri: http://${app.auth-server}:9999
 
 management.endpoint.gateway.enabled: true
-management.endpoint.health.show-details: "ALWAYS"
-management.endpoints.web.exposure.include: "*"
 
 logging:
   level:
     root: INFO
     org.springframework.cloud.gateway.route.RouteDefinitionRouteLocator: INFO
     org.springframework.cloud.gateway: TRACE
+    org.springframework.web.server.adapter.HttpWebHandlerAdapter: TRACE
 
----
-spring.config.activate.on-profile: docker
-
-app:
-  eureka-server: eureka
-  auth-server: auth-server

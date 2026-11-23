@@ -26,6 +26,10 @@ jar {
 }
 
 dependencies {
+    implementation 'org.springframework.cloud:spring-cloud-starter-config'
+    implementation 'org.springframework.cloud:spring-cloud-starter-bootstrap'
+    implementation 'org.springframework.boot:spring-boot-starter-aspectj'
+    implementation 'org.springframework.retry:spring-retry'
     implementation 'org.springframework.cloud:spring-cloud-starter-netflix-eureka-server'
     implementation 'org.glassfish.jaxb:jaxb-runtime'
     implementation 'org.springframework.boot:spring-boot-starter-security'
