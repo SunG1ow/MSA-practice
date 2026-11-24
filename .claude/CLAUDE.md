@@ -18,7 +18,7 @@
 - 교수님 진도에 맞춰 Boot 4.0.9 / Java 21 / Gradle 9.8.2 / Spring Cloud 2025.1.4 유지
   (저자 코드는 Boot 3.5.x / Java 24 / Gradle 8.14 / Spring Cloud 2025.0.0)
 
-## 현재 상태 (2026-11-24, 13장 완료)
+## 현재 상태 (2026-11-24, 14장 완료)
 - 3장: api, util, product, recommendation, review, product-composite 서비스 구현
 - 4장: Dockerfile 4개, docker-compose.yml, docker 프로파일, test-em-all.bash(start/stop)
 - 5장: springdoc-openapi 적용, Swagger UI 및 OpenAPI 문서 테스트
@@ -63,11 +63,24 @@
     InvalidInput·NotFound는 무시 (실패로 세지 않음)
   - composite 테스트: Mockito `getProduct(eq(ID), anyInt(), anyInt())` (매처는 인자 전부에 써야 함)
   - test-em-all 통과 (기본 RabbitMQ 구성), 교재 실습(OPEN/HALF_OPEN/CLOSED 전환, fallback, 재시도) 완료
+- 14장: 분산 추적 (Micrometer Tracing + OpenTelemetry 브리지 + Zipkin)
+  - 7개 모듈(config-server 제외): build.gradle 추적 의존성 4줄(spring-retry 아래),
+    bootstrap.yml 2행에 `logging.pattern.correlation`(`[앱이름,traceId,spanId]`), `logging.include-application-name: false`
+  - WebFlux 앱 5개 main 첫 줄 `Hooks.enableAutomaticContextPropagation()`
+  - review: `datasource-micrometer-spring-boot:2.2.1` (JDBC span)
+  - composite: `springBoot { buildInfo() }`, `starter-loadbalancer`, WebClient 빈(Boot Builder + `ReactorLoadBalancerExchangeFilterFunction`),
+    Integration이 `WebClient`를 주입받음, `services/tracing/` 3개(ObservationUtil, ObservationRegistryConfig, BuildInfoObservationFilter),
+    ServiceImpl 공개 메서드 3개를 `observationWithProductInfo`로 감쌈 (span "product info", 태그 productId, build.version)
+  - config-repo: application.yml 공통 구역에 Zipkin 주소와 `sampling.probability: 1.0`, 서비스 4개 로그 레벨 DEBUG → INFO
+  - compose 3개: `zipkin-server` (openzipkin/zipkin:3.5.0, STORAGE_TYPE=mem, mem_limit 1024m, 9411 공개)
+  - 테스트 코드, test-em-all 변경 없음. test-em-all 통과 (기본 RabbitMQ 구성),
+    교재 실습(GET/에러/비동기 POST trace, 로그 traceId grep, 태그 검색, 관계도) 완료
 - 포트
   - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8443(https), auth-server 9999, config-server 8888
-  - docker 프로파일: 모든 서비스 8080(auth-server 9999, config-server 8888), 외부 공개는 gateway 8443:8443 하나
+  - docker 프로파일: 모든 서비스 8080(auth-server 9999, config-server 8888), 외부 공개는 gateway 8443:8443과 zipkin 9411:9411
   - Gateway 경유 주소(https, -k): `/product-composite/**`(토큰 필요), `/openapi/swagger-ui.html`, `/eureka/web`·`/eureka/api/apps`(u/p), `/oauth2/**`·`/login`(auth-server)
   - DB/브로커: mongodb 27017, mysql 3306, rabbitmq 5672(관리 화면 15672, guest/guest), kafka 9092, zookeeper 2181
+  - Zipkin: 9411 (`http://localhost:9411`, 서비스는 내부 이름 `zipkin-server:9411`로 전송)
 
 
 ## 저자 코드와 다르게 한 부분
@@ -118,6 +131,11 @@
 | composite에 `spring-boot-starter-aop` 추가 | 추가하지 않음 (12장의 `starter-aspectj`가 이미 있음) |
 | test-em-all 기대값 `CLOSED_TO_OPEN` 등 3개 | `"State transition from CLOSED to OPEN"` 등 (220~222행) |
 | (없음) | composite 테스트 Mockito: `getProduct(eq(PRODUCT_ID_OK), anyInt(), anyInt())` |
+| `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-zipkin` | 위 2줄 + `spring-boot-micrometer-tracing-opentelemetry` + `spring-boot-zipkin` (7개 모듈, config-server 제외) |
+| `management.zipkin.tracing.endpoint` | `management.tracing.export.zipkin.endpoint` (옛 이름은 level: error로 무시) |
+| `org.springframework.boot.actuate.autoconfigure.observation.ObservationRegistryCustomizer` | `org.springframework.boot.micrometer.observation.autoconfigure.ObservationRegistryCustomizer` |
+| review `datasource-micrometer-spring-boot:1.0.0` | `2.2.1` (1.x는 Boot 3, 2.0~2.2는 Boot 4.0, 2.3은 Boot 4.1) |
+| composite `test { testLogging.showStandardStreams = true }` | 넣지 않음 (출력만 길어짐) |
 
 - `AutoConfigureWebTestClient` import 경로:
   `org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient`
@@ -175,6 +193,16 @@
   (`management.endpoints.jackson.isolated-json-mapper` 기본값 true). 그래서 test-em-all 기대값을 바꿨다.
 - `@Retry`, `@CircuitBreaker`, `@TimeLimiter` import는 `io.github.resilience4j...annotation.*`.
   spring-retry에도 이름이 같은 `@Retry`/`@CircuitBreaker`가 있으니 VS Code 자동 import에 주의.
+- Boot 4는 추적 자동 구성이 모듈로 분리되어 있다. bridge-otel과 exporter-zipkin만 넣으면 조립이 안 되므로
+  `spring-boot-micrometer-tracing-opentelemetry`(OTel 연결)와 `spring-boot-zipkin`(전송, `management.tracing.export.zipkin.*`)을 함께 넣는다.
+  (`spring-boot-starter-zipkin`은 Brave 구현이라 교재의 OTel과 다름)
+- 옛 속성 `management.zipkin.tracing.endpoint`는 무시되어 기본값 localhost:9411로 보낸다. 컨테이너 안에서
+  `Failed to export spans` + `ConnectException`이 계속 나면 속성 이름이나 config-repo 구역 위치를 확인한다
+- gateway의 `@LoadBalanced WebClient.Builder`는 그대로 둔다. 헬스 체크용이고, 라우팅은 Gateway 자체 클라이언트라 추적 헤더가 이미 붙는다.
+  composite는 Boot의 Builder에 추적 설정이 있어서 `builder.filter(lbFunction).build()` WebClient 빈으로 바꿨다
+- `Hooks.enableAutomaticContextPropagation()`은 WebFlux 앱 5개(product, recommendation, review, gateway, composite)의 main 첫 줄.
+  eureka-server·auth-server는 서블릿이라 없음. review는 jdbcScheduler로 스레드가 바뀌어도 JDBC span이 같은 trace에 붙는 것을 확인
+- composite `springBoot { buildInfo() }`가 없으면 `BuildProperties` 빈이 없어 시작 실패 (ObservationRegistryConfig가 사용)
 
 ## Jackson 3의 final 필드 대응 (적용 완료)
 증상: final 필드 객체를 JSON에서 읽을 때 값이 비어 있음 (productId 0, name null)
@@ -224,6 +252,12 @@
   덮으면 `tools.jackson` import, `JacksonException`, `UNPROCESSABLE_CONTENT`, health.contributor가 되돌아간다
 - 13장 config-repo/product-composite.yml: resilience4j 구역은 issuer-uri 다음, `logging:`과 첫 `---` 앞(기본 구역)에 넣는다
 - 13장 test-em-all.bash: 저자 13장 파일 + 220~222행 기대값 3개 변경 (위 표)
+- 14장 저자 파일 그대로 받아도 되는 것: composite `ProductCompositeServiceImpl`(우리 파일이 저자 13장과 같았음),
+  tracing 3개(`ObservationRegistryConfig` import만 수정), `GatewayApplication`, `ReviewServiceApplication`
+- 14장 덮으면 안 되는 것: product·recommendation Application(`spring.mongodb` 되돌아감, Hooks 2줄만 추가),
+  ProductCompositeIntegration(생성자 `WebClient webClient`, `this.webClient = webClient` 2줄만),
+  compose 3개(httpbin 빠짐, zipkin-server 블록만 httpbin 위에 추가)
+- 14장 config-repo/application.yml: Zipkin 2줄은 첫 `---` 위(공통 구역). 아래쪽 `management.health.rabbit.enabled` 근처는 kafka 구역이다
 - 확인 방법: 저자 ChapterXX와 diff, 서비스별 `./gradlew :microservices:xxx-service:build`, 전체 `./gradlew build`,
   `./test-em-all.bash start stop`
 
@@ -289,10 +323,7 @@
   curl -k https://dev-usr:dev-pwd@localhost:8443/config/decrypt -d $ENC -s ; echo
   curl -k https://dev-usr:dev-pwd@localhost:8443/config/review/docker -s | jq '.propertySources[].source | with_entries(select(.key | test("password")))'
   curl -k https://localhost:8443/config/product/docker -i -s | head -1                                        # 401
-(앞에 공백 2칸, 백틱 3개)
-
-### ⑦ ⑥에서 넣은 닫는 줄 바로 아래: 13장 실습 메모
-````markdown
+  ```
 - 13장 test-em-all: 12장 내용 + 서킷 브레이커 검증 (delay=3으로 OPEN, fallback, 13 → 404, 10초 후 HALF_OPEN, 정상 3회 → CLOSED).
   `SKIP_CB_TESTS=true ./test-em-all.bash`로 이 부분을 건너뛸 수 있다
 - 복원력 실습 명령 (13장, `./test-em-all.bash start`로 띄우고 TOKEN을 발급한 같은 터미널에서)
@@ -306,6 +337,29 @@
   docker compose exec -T product-composite wget -qO - http://product-composite:8080/actuator/circuitbreakerevents/product/STATE_TRANSITION | jq -r '.circuitBreakerEvents[] | "\(.creationTime[11:19])  \(.stateTransition)"'
   docker compose exec -T product-composite wget -qO - http://product-composite:8080/actuator/retryevents | jq -r '.retryEvents[] | "\(.type) \(.numberOfAttempts)"'
   docker compose logs product --since 2m | grep "Bad luck"
+  ```
+  - actuator 시간은 UTC (한국 시간 -9시간)
+  - `faultPercent=100`을 반복하면 재시도 후 500이 쌓여 OPEN이 된다 (500은 ignoreExceptions에 없음)
+- 셸 스크립트 문법 확인: `bash -n test-em-all.bash` (실행하지 않고 검사. `unexpected EOF ... matching '"'`는 따옴표 짝 문제)
+- 14장 test-em-all: 변경 없음 (13장 파일 그대로). 통과하면 추적 추가로 기존 기능이 깨지지 않았다는 뜻
+- 분산 추적 실습 명령 (14장, `./test-em-all.bash start` 후 같은 터미널, TOKEN·call은 13장과 같음)
+  ```bash
+  curl -s localhost:9411/api/v2/services | jq        # 7개: auth-server, eureka-server, gateway, product, product-composite, recommendation, review
+  lasttrace() { docker compose logs product-composite --since 30s | grep -o "\[product-composite,[0-9a-f]\{32\}" | tail -1 | cut -d, -f2; }
+  call 1; TID=$(lasttrace); echo "http://localhost:9411/zipkin/traces/$TID"   # 브라우저로 열기
+  docker compose logs | grep $TID                    # 같은 요청의 로그만 (서비스 4개)
+  ```
+  - Zipkin 화면: `http://localhost:9411` (gateway를 거치지 않음). 필터 주소 예:
+    `/zipkin/?serviceName=product-composite&lookback=15m`, `/zipkin/?annotationQuery=productId%3D1`, 관계도 `/zipkin/dependency`
+  - 확인한 것: GET은 gateway → composite("product info" span, productId·build.version 태그) → product/recommendation/review 병렬,
+    review 아래 JDBC span(connection/query/result-set). POST/DELETE는 `xxx-out-0 send` → RabbitMQ → `receive` → `messageprocessor process`까지 trace 하나.
+    에러는 빨간색. `delay=3`은 composite CLIENT span 2초(TimeLimiter), product SERVER span 3초
+  - span은 몇 초씩 묶어서 전송된다. 상세 화면이 비거나 일부 서비스가 빠지면 5초 뒤 새로고침
+  - 요청 없이도 쌓이는 trace: `xxx: http put`(Eureka 하트비트), `xxx: http get`(레지스트리 조회), `auth-server: /actuator/health`(Docker healthcheck)
+  - 추적 헤더 보기: config-repo/product-composite.yml 공통 구역에 `spring.codec.log-request-details: true`,
+    `logging.level.org.springframework.web.reactive.function.client.ExchangeFunctions: TRACE` → `docker compose restart product-composite`
+    → 로그에서 `traceparent:"00-{traceId}-{부모spanId}-01"` 확인. 끝나면 두 줄 삭제 후 다시 restart
+  - Zipkin은 메모리 저장(`STORAGE_TYPE=mem`)이라 재시작하면 기록이 사라진다. Zipkin이 꺼져도 서비스는 정상 동작하고 `Failed to export spans` 경고만 남는다
 
 - 파티션/Kafka 실행 (같은 터미널에서)
   ```bash
@@ -329,7 +383,7 @@
     Kafka는 autoRebalanceEnabled(기본 true) 때문에 Kafka가 배정해서 instanceIndex와 무관하고 실행마다 바뀔 수 있다.
     실제 배정 확인: kafka-consumer-groups --describe --group productsGroup (HOST 열)
   - Kafka의 `error.<topic>.<group>` 토픽은 DLQ (`enableDlq: true`). 비어 있으면 처리 실패 없음.
-- Kafka 구성은 컨테이너 11개, mem_limit 합계 약 5.5GB. 137로 죽으면 메모리 부족.
+- Kafka 구성은 컨테이너 12개, mem_limit 합계 약 6.5GB (14장 zipkin-server 1GB 추가). 137로 죽으면 메모리 부족.
 - 로컬(java -jar)로 테스트할 때: `PORT=7001 ./test-em-all.bash`
 - 빌드 명령 경로는 `:microservices:product-service:build` (s 주의). `./gradlew build/`처럼 슬래시가 붙으면 실패.
 - WSL에서 docker가 없으면 Docker Desktop의 WSL Integration에서 Ubuntu를 켠다.

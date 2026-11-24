@@ -132,8 +132,8 @@ resilience4j.circuitbreaker:
 logging:
   level:
     root: INFO
-    se.magnus: DEBUG
-    org.springframework.web.server.adapter.HttpWebHandlerAdapter: TRACE
+    se.magnus: INFO
+    org.springframework.web.server.adapter.HttpWebHandlerAdapter: INFO
 
 ---
 spring.config.activate.on-profile: docker
