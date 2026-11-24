@@ -18,7 +18,7 @@
 - 교수님 진도에 맞춰 Boot 4.0.9 / Java 21 / Gradle 9.8.2 / Spring Cloud 2025.1.4 유지
   (저자 코드는 Boot 3.5.x / Java 24 / Gradle 8.14 / Spring Cloud 2025.0.0)
 
-## 현재 상태 (2026-11-23, 12장 완료)
+## 현재 상태 (2026-11-24, 13장 완료)
 - 3장: api, util, product, recommendation, review, product-composite 서비스 구현
 - 4장: Dockerfile 4개, docker-compose.yml, docker 프로파일, test-em-all.bash(start/stop)
 - 5장: springdoc-openapi 적용, Swagger UI 및 OpenAPI 문서 테스트
@@ -53,6 +53,16 @@
   - config-repo의 비밀번호는 `{cipher}` 암호문. 구성 서버가 복호화해서 평문으로 내려준다
   - Gateway `/config/**` → config-server (RewritePath), SecurityConfig에서 permitAll (인증은 구성 서버의 Basic)
   - test-em-all 통과 (기본 RabbitMQ 구성), 교재 실습(설정 조회, encrypt/decrypt, `{cipher}` 복호화 확인) 완료
+- 13장: 복원력 (Resilience4j, composite → product 호출에만 적용)
+  - api `getProduct`에 `delay`, `faultPercent` 쿼리 파라미터 추가 (기본 0). product가 지연/에러를 일부러 낸다
+  - composite Integration의 getProduct: `@Retry` `@TimeLimiter` `@CircuitBreaker(fallbackMethod = "getProductFallbackValue")`
+    - 실행 순서: Retry(CircuitBreaker(TimeLimiter(호출)))
+    - fallback은 회로가 OPEN일 때(`CallNotPermittedException`)만 실행. productId 13은 fallback 안에서 404, 나머지는 "Fallback product{id}"
+  - 설정은 `config-repo/product-composite.yml`: TimeLimiter 2초, Retry 3회(1초 간격, InternalServerError만),
+    CircuitBreaker COUNT_BASED 5회 중 50% 실패 → OPEN, 10초 뒤 자동 HALF_OPEN, 3회 성공 → CLOSED,
+    InvalidInput·NotFound는 무시 (실패로 세지 않음)
+  - composite 테스트: Mockito `getProduct(eq(ID), anyInt(), anyInt())` (매처는 인자 전부에 써야 함)
+  - test-em-all 통과 (기본 RabbitMQ 구성), 교재 실습(OPEN/HALF_OPEN/CLOSED 전환, fallback, 재시도) 완료
 - 포트
   - 로컬(java -jar): composite 7001, product 7002, recommendation 7003, review 7004, eureka 8761, gateway 8443(https), auth-server 9999, config-server 8888
   - docker 프로파일: 모든 서비스 8080(auth-server 9999, config-server 8888), 외부 공개는 gateway 8443:8443 하나
@@ -104,6 +114,10 @@
 | (없음) | composite 테스트 yml 1행 `spring.jackson.mapper.allow-final-fields-as-mutators: true` |
 | (없음) | review 테스트 2개에 `spring.jpa.hibernate.ddl-auto=update` |
 | auth-server 테스트 yml (저자 12장) | 만들지 않음 (`ml.` 로 시작하는 잘못된 줄이 섞여 있음, 없어도 통과) |
+| `resilience4j-spring-boot3` `2.3.0` | `resilience4j-spring-boot4` `2.4.0` (bom도 2.4.0) |
+| composite에 `spring-boot-starter-aop` 추가 | 추가하지 않음 (12장의 `starter-aspectj`가 이미 있음) |
+| test-em-all 기대값 `CLOSED_TO_OPEN` 등 3개 | `"State transition from CLOSED to OPEN"` 등 (220~222행) |
+| (없음) | composite 테스트 Mockito: `getProduct(eq(PRODUCT_ID_OK), anyInt(), anyInt())` |
 
 - `AutoConfigureWebTestClient` import 경로:
   `org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient`
@@ -155,6 +169,12 @@
 - `include-message`가 빠지면 `getProductInvalidParameterString`만 실패한다(`No value at JSON path "$.message"`).
   타입 불일치는 Spring 기본 에러 처리라 이 설정이 필요하고, 음수 검사는 우리 핸들러가 message를 직접 넣어서 통과한다.
 - gateway의 `keystore/edge.p12`는 src/main/resources에 남긴다. 구성 서버는 경로(`classpath:keystore/edge.p12`)만 내려준다.
+- Jackson 3는 enum을 `toString()`으로 직렬화한다. Resilience4j의 상태 전환 enum은 toString이
+  "State transition from CLOSED to OPEN"이라 `/actuator/circuitbreakerevents`의 stateTransition도 이 문자열로 나온다.
+  `spring.jackson.datatype.enum.*`으로는 바뀌지 않는다. actuator는 별도 매퍼를 쓰기 때문이다
+  (`management.endpoints.jackson.isolated-json-mapper` 기본값 true). 그래서 test-em-all 기대값을 바꿨다.
+- `@Retry`, `@CircuitBreaker`, `@TimeLimiter` import는 `io.github.resilience4j...annotation.*`.
+  spring-retry에도 이름이 같은 `@Retry`/`@CircuitBreaker`가 있으니 VS Code 자동 import에 주의.
 
 ## Jackson 3의 final 필드 대응 (적용 완료)
 증상: final 필드 객체를 JSON에서 읽을 때 값이 비어 있음 (productId 0, name null)
@@ -199,6 +219,11 @@
   (allow-final은 application.yml에만 있으면 되지만 8개 모두에 넣어 둔 상태. 동작에는 문제없음)
 - 12장 compose 3개: 저자 12장 파일로 받고 httpbin을 다시 붙였다. test-em-all.bash는 저자 12장 그대로
 - 13장 이후 설정 변경은 서비스 yml이 아니라 `config-repo/`에서 한다. 저자 ChapterXX의 config-repo와 diff할 것
+- 13장 ProductCompositeIntegration: 저자 파일로 덮지 말고 바뀐 부분만 넣는다
+  (resilience4j import, ServiceUtil 필드·생성자, getProduct 어노테이션·UriComponentsBuilder, fallback 메서드).
+  덮으면 `tools.jackson` import, `JacksonException`, `UNPROCESSABLE_CONTENT`, health.contributor가 되돌아간다
+- 13장 config-repo/product-composite.yml: resilience4j 구역은 issuer-uri 다음, `logging:`과 첫 `---` 앞(기본 구역)에 넣는다
+- 13장 test-em-all.bash: 저자 13장 파일 + 220~222행 기대값 3개 변경 (위 표)
 - 확인 방법: 저자 ChapterXX와 diff, 서비스별 `./gradlew :microservices:xxx-service:build`, 전체 `./gradlew build`,
   `./test-em-all.bash start stop`
 
@@ -264,7 +289,23 @@
   curl -k https://dev-usr:dev-pwd@localhost:8443/config/decrypt -d $ENC -s ; echo
   curl -k https://dev-usr:dev-pwd@localhost:8443/config/review/docker -s | jq '.propertySources[].source | with_entries(select(.key | test("password")))'
   curl -k https://localhost:8443/config/product/docker -i -s | head -1                                        # 401
+(앞에 공백 2칸, 백틱 3개)
 
+### ⑦ ⑥에서 넣은 닫는 줄 바로 아래: 13장 실습 메모
+````markdown
+- 13장 test-em-all: 12장 내용 + 서킷 브레이커 검증 (delay=3으로 OPEN, fallback, 13 → 404, 10초 후 HALF_OPEN, 정상 3회 → CLOSED).
+  `SKIP_CB_TESTS=true ./test-em-all.bash`로 이 부분을 건너뛸 수 있다
+- 복원력 실습 명령 (13장, `./test-em-all.bash start`로 띄우고 TOKEN을 발급한 같은 터미널에서)
+  ```bash
+  cbstate() { docker compose exec -T product-composite wget -qO - http://product-composite:8080/actuator/health | jq -r .components.circuitBreakers.details.product.details.state; }
+  call() { curl -k "https://localhost:8443/product-composite/$1" -H "Authorization: Bearer $TOKEN" -s -w "  → HTTP %{http_code}, %{time_total}s\n"; }
+  call "1?delay=3"            # 2초에 500 (TimeLimiter). 반복하면 OPEN
+  call 1                      # OPEN이면 즉시 "Fallback product1"
+  sleep 10; cbstate           # HALF_OPEN
+  for i in $(seq 1 10); do call "1?faultPercent=25" | tail -1; done   # 1초·2초짜리 응답 = 재시도
+  docker compose exec -T product-composite wget -qO - http://product-composite:8080/actuator/circuitbreakerevents/product/STATE_TRANSITION | jq -r '.circuitBreakerEvents[] | "\(.creationTime[11:19])  \(.stateTransition)"'
+  docker compose exec -T product-composite wget -qO - http://product-composite:8080/actuator/retryevents | jq -r '.retryEvents[] | "\(.type) \(.numberOfAttempts)"'
+  docker compose logs product --since 2m | grep "Bad luck"
 
 - 파티션/Kafka 실행 (같은 터미널에서)
   ```bash
